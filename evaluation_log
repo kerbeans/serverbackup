@@ -1,0 +1,3 @@
+{"mean": 8.649651527404785, "std": 0.0, "path": "validation/full_net_NCE", "split": 1, "comments": "inception score"}
+{"mean": 8.324284553527832, "std": 0.0, "path": "data/images", "split": 1, "comments": "inception score"}
+{"mean": 7.912003517150879, "std": 0.39608442783355713, "path": "data/images", "split": 20, "comments": "inception score"}

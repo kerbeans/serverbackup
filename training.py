@@ -25,7 +25,7 @@ from diffusers.pipelines.stable_diffusion import StableDiffusionSafetyChecker
 from huggingface_hub import Repository
 from torch.utils.data import random_split
 
-from func_utils import parse_args,get_full_repo_name,freeze_params,unfreeze_params,model_log
+from func_utils import parse_args,get_full_repo_name,freeze_params,unfreeze_params,model_log,save_progress
 
 # TODO: remove and import from diffusers.utils when the new version of diffusers is released
 from packaging import version
@@ -113,7 +113,7 @@ def main():
 
     # freeze params    
     freeze_params(vae.parameters())
-    freeze_params(text_encoder.text_model.parameters())
+    #freeze_params(text_encoder.text_model.parameters())
     
     if args.scale_lr:
         args.learning_rate = (
@@ -125,27 +125,36 @@ def main():
     #train_params=unet.conv_in.parameters()
     # Initialize the optimizer
     optimizer = torch.optim.AdamW(
-        unet.parameters(),
-        lr=args.learning_rate,
-        betas=(args.adam_beta1, args.adam_beta2),
-        weight_decay=args.adam_weight_decay,
-        eps=args.adam_epsilon,
+        [{  'params':unet.parameters(),
+            'lr':args.learning_rate,
+            'betas':(args.adam_beta1, args.adam_beta2),
+            'weight_decay':args.adam_weight_decay,
+            'eps':args.adam_epsilon},
+        {
+            'params':text_encoder.text_model.parameters(),
+            'lr':1e-4,
+            'betas':(args.adam_beta1, args.adam_beta2),
+            'weight_decay':args.adam_weight_decay,
+            'eps':args.adam_epsilon
+        }
+        ]
     )
 
     noise_scheduler = DDPMScheduler.from_config(args.pretrained_model_name_or_path, subfolder="scheduler")
-    # train_dataset = FashionIQDataset(
+    train_dataset = FashionIQDataset(
+        split='train',
+        dress_types=['dress','shirt','toptee'],
+        tokenizer=tokenizer,
+        dim=args.resolution,
+        preprossor=CLIPFeatureExtractor.from_pretrained('openai/clip-vit-base-patch32')
+    )
+    # train_dataset=Fashion200kDataset(
     #     split='train',
-    #     dress_types=['dress','shirt','toptee'],
+    #     dress_type=['dress','jacket','pants','top','skirt'],
+    #     data_path='fashion200k',
     #     tokenizer=tokenizer,
     #     dim=args.resolution
     # )
-    train_dataset=Fashion200kDataset(
-        split='train',
-        dress_type=['dress','jacket','pants','top','skirt'],
-        data_path='fashion200k',
-        tokenizer=tokenizer,
-        dim=args.resolution
-    )
     
     
     
@@ -177,10 +186,9 @@ def main():
     # Move vae and unet to device
     vae.to(accelerator.device)
     unet.to(accelerator.device)
-
+    text_encoder.to(accelerator.device)
     # Keep vae and unet in eval model as we don't train these
     vae.eval()
-    text_encoder.text_model.eval()
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -217,8 +225,10 @@ def main():
         print(f'epoch {epoch}-------------')
         step_loss=[]
         unet.train()
+        text_encoder.train()
         for step, batch in enumerate(train_dataloader):
-            with accelerator.accumulate(unet.parameters()):
+            #print('in batch')
+            with accelerator.accumulate([unet.parameters(),text_encoder.text_model.parameters()]):
                 # Convert images to latent space
                 
                 target_latents=vae.encode(batch['target']).latent_dist.sample().detach()*0.18215
@@ -281,8 +291,8 @@ def main():
             if accelerator.sync_gradients:
                 progress_bar.update(1)
                 global_step += 1
-                # if global_step % args.save_steps == 0:
-                #     save_progress(text_encoder, placeholder_token_id, accelerator, args)
+                if epoch % 10 == 0:
+                    save_progress(text_encoder, text_encoder, accelerator, args)
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
@@ -297,7 +307,7 @@ def main():
     
     if accelerator.is_main_process:
         pipeline = StableDiffusionPipeline(
-            text_encoder=text_encoder,
+            text_encoder=accelerator.unwrap_model(text_encoder),
             vae=vae,
             unet=accelerator.unwrap_model(unet),
             tokenizer=tokenizer,

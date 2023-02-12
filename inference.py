@@ -3,7 +3,7 @@ import PIL
 import numpy as np
 from pathlib import Path
 
-from diffusers import StableDiffusionImg2ImgPipeline,AutoencoderKL,DDPMScheduler,UNet2DConditionModel, StableDiffusionPipeline
+from diffusers import StableDiffusionImg2ImgPipeline,AutoencoderKL,DDPMScheduler,StableDiffusionPipeline
 from data_utils import FashionIQDataset ,collate_fn
 from torch.utils.data import DataLoader
 from transformers import CLIPTokenizer,CLIPFeatureExtractor, CLIPTextModel
@@ -13,7 +13,8 @@ import torchvision.utils as tvu
 from func_utils import model_log
 from pytorch_fid.fid_score import calculate_fid_given_paths
 from diffusers.schedulers import DDIMScheduler
-
+#from lib_vd import UNet2DConditionModel
+from diffusers import UNet2DConditionModel
 base_path= Path(__file__).absolute().parents[1].absolute()
 import os 
 #from lib_vd import UNet2DConditionModel
@@ -153,21 +154,22 @@ def evaluation_folder(folder="evaluation",img_len=20,resize=(256,256),device='cu
                 elog['result']=res
                 model_log(f'{folder}/elog',elog)
 
-from diffusers import CycleDiffusionPipeline, DDIMScheduler
+
 
 def evaluation(model_path,output_path,evaluation_path='evaluation',device='cuda'):
         # pipe=FashionImg2ImgPipeline.from_pretrained(model_path,
-        #         scheduler=DDIMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", steps_offset=1, clip_sample=False)
+        #  #       scheduler=DDIMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", steps_offset=1, clip_sample=False)
         #                                             ).to(device)
-        if True:
-                # pipe = StableDiffusionImg2ImgPipeline.from_pretrained(model_path,
-                #         scheduler=DDIMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", steps_offset=1, clip_sample=False), 
-                #         use_auth_token='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',
-                #         revision="fp16", torch_dtype=torch.float16
-                #         ).to("cuda")
-                scheduler = DDIMScheduler.from_pretrained(model_path, subfolder="scheduler")
-                pipe = CycleDiffusionPipeline.from_pretrained(model_path, scheduler=scheduler).to("cuda")     
-                
+        pipe = FashionImg2ImgPipeline(
+            text_encoder=CLIPTextModel.from_pretrained(model_path,subfolder='text_encoder'),
+            vae=AutoencoderKL.from_pretrained(model_path,subfolder='vae'),
+            unet=UNet2DConditionModel.from_pretrained(model_path,subfolder='unet'),
+            tokenizer=CLIPTokenizer.from_pretrained(model_path,subfolder='tokenizer'),
+            scheduler=DDPMScheduler.from_config(model_path, subfolder="scheduler"),
+            feature_extractor=CLIPFeatureExtractor.from_pretrained("openai/clip-vit-base-patch32"),
+            safety_checker=StableDiffusionSafetyChecker.from_pretrained("CompVis/stable-diffusion-safety-checker")
+        ).to('cuda')
+        pipe=FashionImg2ImgPipeline.from_pretrained(model_path).to(device)      
                 
         if not os.path.exists(f'{evaluation_path}/{output_path}'):
                 os.mkdir(f'{evaluation_path}/{output_path}')
@@ -179,19 +181,17 @@ def evaluation(model_path,output_path,evaluation_path='evaluation',device='cuda'
                 print(f'batch size {img_len}')
                 for file in files:
                         image = PIL.Image.open(f'{root}/{file}')
+                        image=image.resize((512,512))
                         caption=file.replace("_"," ")
                         # img=pipe(caption,init_image=image,
-                        #         guidance_si=3.5, guidance_st=5.5,
+                        #         # guidance_si=3.5, guidance_st=5.5,
                         #         num_inference_steps=50).images[0]
                         #-------------------------#
-                        img = pipe(prompt=caption,
-                                source_prompt="",
-                                image=image,
-                                num_inference_steps=100,
-                                eta=0.1,
-                                strength=0.8,
-                                guidance_scale=2,
-                                source_guidance_scale=1,
+                        img = pipe.mycall(prompt=caption,
+                                init_image=image,
+                                num_inference_steps=50,
+                                out_dim=256,
+                                init_overwrite=False
                         ).images[0]
                         
                         
@@ -213,14 +213,35 @@ def evaluation(model_path,output_path,evaluation_path='evaluation',device='cuda'
            
 if __name__ =='__main__':
         #evaluation_folder(folder='evaluation_512',resize=(512,512))
-        #evaluation("runwayml/stable-diffusion-v1-5",'circle_diff','evaluation_512')
+        #evaluation("model/attn_vd_ne_32_5e-05_20",'vd','evaluation_512')
+        #evaluation("model/info_nce_128_1e-06_20",'full40_lpips','evaluation','cuda:3')
+        
+        print('??')
+        
         # pipe=DDIMPipeline(unet=UNet2DConditionModel.from_pretrained('runwayml/stable-diffusion-v1-5',subfolder='unet'),
         #                                     scheduler= DDIMScheduler())
         # imgs=pipe()
-        caption='a woman in a purple dress poses for a picture, pinterest contest winner, american barbizon school, product advertising, inverted triangle body type, draped drapes, 2 0 0 8, casual clothing style, official product photo, sexy red dress, oganic rippling spirals, earth tone colors, retaildesignblog.net, large breasts size, anthro'
-        caption='a dress on a mannequin mannequin mannequin mannequin mannequin mannequin mannequin mannequin, the dress\'s lower, ivy vine leaf and flower top, elegant tropical prints, dress of leaves, short flat hourglass slim figure, airbrush dark dress, floral art novuea dress, vine dress, black tunic, feminine girly dress, seductive camisole, flower butterfly vest, feminine slim figure'
-        caption='A black shirt with a skull on it, skull on the chest, badass clothing, skull image on the vest, skull bones, monstrous skull, skull design for a rock band, death skull, breaded skull, aztec skull, of spiked gears of war skulls, wildlife, single aztec skull, with an animal skull for a head, fantasy skull, full skull shaped face cover'
-        pipe =StableDiffusionPipeline.from_pretrained('runwayml/stable-diffusion-v1-5').to('cuda')
-        img=pipe(caption).images[0]
+        # caption='a woman in a purple dress poses for a picture, pinterest contest winner, american barbizon school, product advertising, inverted triangle body type, draped drapes, 2 0 0 8, casual clothing style, official product photo, sexy red dress, oganic rippling spirals, earth tone colors, retaildesignblog.net, large breasts size, anthro'
+        # caption='a dress on a mannequin mannequin mannequin mannequin mannequin mannequin mannequin mannequin, the dress\'s lower, ivy vine leaf and flower top, elegant tropical prints, dress of leaves, short flat hourglass slim figure, airbrush dark dress, floral art novuea dress, vine dress, black tunic, feminine girly dress, seductive camisole, flower butterfly vest, feminine slim figure'
+        # caption='A black shirt with a skull on it, skull on the chest, badass clothing, skull image on the vest, skull bones, monstrous skull, skull design for a rock band, death skull, breaded skull, aztec skull, of spiked gears of war skulls, wildlife, single aztec skull, with an animal skull for a head, fantasy skull, full skull shaped face cover'
+        # pipe =StableDiffusionPipeline.from_pretrained('runwayml/stable-diffusion-v1-5').to('cuda')
+        # img=pipe(caption).images[0]
         
-        img.save(f'sample_3.jpg')
+        # img.save(f'sample_3.jpg')
+        # evaluation_path='evaluation_512'
+        # output_path='reference'
+        # device='cuda'
+        # img_len=20
+        # res=calculate_fid_given_paths(
+        #         batch_size=img_len,
+        #         paths=[f'{evaluation_path}/{output_path}',f'{evaluation_path}/target'],
+        #         device=device,
+        #         dims=2048)
+        # elog={}
+        # elog['model']=output_path
+        # elog['model_from']='origin'
+        # elog['result']=res
+        # elog['batch_size']=img_len
+        # elog['dims']=2048
+
+        # model_log(f'{evaluation_path}/elog',elog)

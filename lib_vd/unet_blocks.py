@@ -313,18 +313,9 @@ class UNetMidBlock2DCrossAttn(nn.Module):
             )
         ]
         attentions = []
-        attentions2=[]
+
         for _ in range(num_layers):
             attentions.append(
-                SpatialTransformer(
-                    in_channels,
-                    attn_num_head_channels,
-                    in_channels // attn_num_head_channels,
-                    depth=1,
-                    context_dim=cross_attention_dim,
-                )
-            )
-            attentions2.append(
                 SpatialTransformer(
                     in_channels,
                     attn_num_head_channels,
@@ -349,7 +340,6 @@ class UNetMidBlock2DCrossAttn(nn.Module):
             )
 
         self.attentions = nn.ModuleList(attentions)
-        self.attentions2=nn.ModuleList(attentions2)
         self.resnets = nn.ModuleList(resnets)
 
     def set_attention_slice(self, slice_size):
@@ -367,15 +357,11 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         for attn in self.attentions:
             attn._set_attention_slice(slice_size)
 
-    def forward(self, hidden_states, temb=None, encoder_hidden_states=None,image_hidden_states=None):
+    def forward(self, hidden_states, temb=None, encoder_hidden_states=None):
         hidden_states = self.resnets[0](hidden_states, temb)
-        for attnt, attni ,resnet in zip(self.attentions, self.attentions2 ,self.resnets[1:]):
-            hidden_states_T = attnt(hidden_states, encoder_hidden_states)
-            hidden_states_I =attni(hidden_states,image_hidden_states)
-            hidden_states=hidden_states_T*0.5+hidden_states_I*0.5
+        for attn, resnet in zip(self.attentions, self.resnets[1:]):
+            hidden_states = attn(hidden_states, encoder_hidden_states)
             hidden_states = resnet(hidden_states, temb)
-
-
 
         return hidden_states
 
@@ -484,7 +470,7 @@ class CrossAttnDownBlock2D(nn.Module):
         super().__init__()
         resnets = []
         attentions = []
-        attentions2 =[]
+
         self.attention_type = attention_type
         self.attn_num_head_channels = attn_num_head_channels
 
@@ -513,18 +499,7 @@ class CrossAttnDownBlock2D(nn.Module):
                     context_dim=cross_attention_dim,
                 )
             )
-            attentions2.append(
-                SpatialTransformer(
-                    out_channels,
-                    attn_num_head_channels,
-                    out_channels // attn_num_head_channels,
-                    depth=1,
-                    context_dim=cross_attention_dim,
-                )
-                
-            )
         self.attentions = nn.ModuleList(attentions)
-        self.attentions2 = nn.ModuleList(attentions2)
         self.resnets = nn.ModuleList(resnets)
 
         if add_downsample:
@@ -553,16 +528,13 @@ class CrossAttnDownBlock2D(nn.Module):
         for attn in self.attentions:
             attn._set_attention_slice(slice_size)
 
-    def forward(self, hidden_states, temb=None, encoder_hidden_states=None,
-                image_hidden_states=None):
+    def forward(self, hidden_states, temb=None, encoder_hidden_states=None):
         output_states = ()
 
-        for resnet, attnt, attni in zip(self.resnets, self.attentions,self.attentions2):
+        for resnet, attn in zip(self.resnets, self.attentions):
             hidden_states = resnet(hidden_states, temb)
             #print(f'in unet_blocks.py hidden shape{hidden_states.shape} tm {temb.shape}')
-            hidden_states_T = attnt(hidden_states, context=encoder_hidden_states)
-            hidden_states_I = attni(hidden_states , context = image_hidden_states)
-            hidden_states=0.5*hidden_states_T+0.5*hidden_states_I
+            hidden_states = attn(hidden_states, context=encoder_hidden_states)
             output_states += (hidden_states,)
 
         if self.downsamplers is not None:
@@ -1047,7 +1019,7 @@ class CrossAttnUpBlock2D(nn.Module):
         super().__init__()
         resnets = []
         attentions = []
-        attentions2=[]
+
         self.attention_type = attention_type
         self.attn_num_head_channels = attn_num_head_channels
 
@@ -1078,17 +1050,7 @@ class CrossAttnUpBlock2D(nn.Module):
                     context_dim=cross_attention_dim,
                 )
             )
-            attentions2.append(
-                SpatialTransformer(
-                    out_channels,
-                    attn_num_head_channels,
-                    out_channels // attn_num_head_channels,
-                    depth=1,
-                    context_dim=cross_attention_dim,
-                )                
-            )
         self.attentions = nn.ModuleList(attentions)
-        self.attentions2= nn.ModuleList(attentions2)
         self.resnets = nn.ModuleList(resnets)
 
         if add_upsample:
@@ -1111,20 +1073,16 @@ class CrossAttnUpBlock2D(nn.Module):
         for attn in self.attentions:
             attn._set_attention_slice(slice_size)
 
-    def forward(self, hidden_states, res_hidden_states_tuple, temb=None, encoder_hidden_states=None,
-                image_hidden_states = None):
-        for resnet, attnt ,attni in zip(self.resnets, self.attentions,self.attentions2):
+    def forward(self, hidden_states, res_hidden_states_tuple, temb=None, encoder_hidden_states=None):
+        for resnet, attn in zip(self.resnets, self.attentions):
 
             # pop res hidden states
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
-            #print(f'up attention hs{hidden_states.shape}, rhs {res_hidden_states.shape}')
             hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
+
             hidden_states = resnet(hidden_states, temb)
-            
-            hidden_states_T = attnt(hidden_states, context=encoder_hidden_states)
-            hidden_states_I =attni(hidden_states,context=image_hidden_states)
-            hidden_states = 0.5* hidden_states_I+0.5* hidden_states_T
+            hidden_states = attn(hidden_states, context=encoder_hidden_states)
 
         if self.upsamplers is not None:
             for upsampler in self.upsamplers:

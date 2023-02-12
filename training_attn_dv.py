@@ -31,8 +31,8 @@ from func_utils import parse_args,get_full_repo_name,freeze_params,unfreeze_para
 from packaging import version
 from tqdm.auto import tqdm
 from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer, CLIPVisionModel
-from lib_vd import UNet2DConditionModel
-
+#from lib_vd import UNet2DConditionModel
+from diffusers import UNet2DConditionModel
 import torchvision.transforms as T
 
 
@@ -105,21 +105,6 @@ def main():
         processor=CLIPFeatureExtractor.from_pretrained('openai/clip-vit-base-patch32')
     
     print('-----------------------------model _loaded -----------------------')
-    # url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-    # import requests
-    # image = PIL.Image.open(requests.get(url, stream=True).raw)
-    # input= processor(images=image, return_tensors="pt")
-    # # print(f'input tensor type{type(input)}, and shape ',input['pixel_values'].shape)
-    # # image= image.resize((256,256), resample=PIL.Image.Resampling.LANCZOS)
-    # # print(f'image size {image.size}')
-    # # input=torch.from_numpy(np.array(image).astype(np.float32)).permute(2,0,1).unsqueeze(0)
-    # print(f'input shape {input["pixel_values"].shape} and type{type(input["pixel_values"])}')
-    # input_latent=torch.cat([input["pixel_values"]]*3,dim=0)
-    # outputs = visionModel(pixel_values=input_latent)
-    # print(f'output type {type(outputs)}, shape {outputs["last_hidden_state"].shape}')
-    # print(f' text embeding len {len(tokenizer)}')
-    # return 
-
     text_encoder.resize_token_embeddings(len(tokenizer))
     model_dict={}
     model_dict['pretrained']=args.pretrained_model_name_or_path
@@ -130,7 +115,6 @@ def main():
 
     # freeze params    
     freeze_params(vae.parameters())
-    freeze_params(text_encoder.text_model.parameters())
     freeze_params(visionModel.parameters())
     
     if args.scale_lr:
@@ -138,21 +122,29 @@ def main():
             args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size * accelerator.num_processes
         )
     
-    for name,layer in unet.named_parameters():
-        if 'attentions' in name:
-            layer.requires_grad=True
-            if 'attentions2' in name:
-                torch.nn.init.zeros_(layer)
-        else :
-            layer.requires_grad =False
-    train_params=filter(lambda p: p.requires_grad,unet.parameters())
+    # for name,layer in unet.named_parameters():
+    #     if 'attentions' in name:
+    #         layer.requires_grad=True
+    #         if 'attentions2' in name:
+    #             torch.nn.init.zeros_(layer)
+    #     else :
+    #         layer.requires_grad =False
+    # train_params=filter(lambda p: p.requires_grad,unet.parameters())
     
     optimizer = torch.optim.AdamW(
-        train_params,
-        lr=args.learning_rate,
-        betas=(args.adam_beta1, args.adam_beta2),
-        weight_decay=args.adam_weight_decay,
-        eps=args.adam_epsilon,
+        [{  'params':unet.parameters(),
+            'lr':args.learning_rate,
+            'betas':(args.adam_beta1, args.adam_beta2),
+            'weight_decay':args.adam_weight_decay,
+            'eps':args.adam_epsilon},
+        {
+            'params':text_encoder.text_model.parameters(),
+            'lr':1e-4,
+            'betas':(args.adam_beta1, args.adam_beta2),
+            'weight_decay':args.adam_weight_decay,
+            'eps':args.adam_epsilon
+        }
+        ]
     )
 
     noise_scheduler = DDPMScheduler.from_config(args.pretrained_model_name_or_path, subfolder="scheduler")
@@ -160,6 +152,7 @@ def main():
         split='train',
         dress_types=['dress','shirt','toptee'],
         tokenizer=tokenizer,
+        preprossor=processor,
         dim=args.resolution
     )
     torch.manual_seed(0)
@@ -182,18 +175,19 @@ def main():
         num_training_steps=args.max_train_steps * args.gradient_accumulation_steps,
     )
 
-    vae,unet,text_encoder, optimizer, train_dataloader, lr_scheduler ,processor,visionModel= accelerator.prepare(
-     vae,unet, text_encoder, optimizer, train_dataloader, lr_scheduler,processor,visionModel
+    vae,unet,text_encoder, optimizer, train_dataloader, lr_scheduler,visionModel,processor= accelerator.prepare(
+     vae,unet, text_encoder, optimizer, train_dataloader, lr_scheduler,visionModel,processor
     )
 
     # Move vae and unet to device
+    text_encoder.to(accelerator.device)
     vae.to(accelerator.device)
     unet.to(accelerator.device)
     visionModel.to(accelerator.device)
     
     # Keep vae and unet in eval model as we don't train these
     vae.eval()
-    text_encoder.text_model.eval()
+    #text_encoder.text_model.eval()
     visionModel.eval()
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -221,33 +215,33 @@ def main():
     ).input_ids[0]
     batch_size=args.train_batch_size
     zerotoken=zerotoken.to(accelerator.device)
-    zerotoken=text_encoder(zerotoken.unsqueeze(0))[0].squeeze(0)
     epoch_loss=[] 
-    # ema=EMA(0.99)
-    # ema_unet=copy.deepcopy(unet).eval().requires_grad_(False)
     for epoch in range(args.num_train_epochs):
         print(f'epoch {epoch}-------------')
         step_loss=[]
         unet.train()
         for step, batch in enumerate(train_dataloader):
-            with accelerator.accumulate(train_params):
+            with accelerator.accumulate([unet,text_encoder]):
                 # Convert images to latent space
-                target_latents=vae.encode(batch['target']).latent_dist.sample().detach()*0.18215
-                image_guidance=visionModel(pixel_values=batch['ref_i'].clamp(0,255))['last_hidden_state']
-                text_guidance =text_encoder(batch['caption'])[0]
-                # print(f'text guidance {text_guidance.shape}')
-                #print(f'test input text {text_guidance.shape},img_g {image_guidance.shape}, img {target_latents.shape}')
-
-                # for idx in range(batch_size):
-                #     neglect=np.random.randint(0,100)
-                #     if neglect<5: #mute img
-                #         image_guidance[idx]=visionModel(pixel_values=torch.randn((1,3,224,224)).clamp(0,255).to(accelerator.device))['last_hidden_state']
-                #     elif neglect <10: # mute text
-                #         text_guidance[idx]=zerotoken
-                #     elif neglect <15: # mute both
-                #         image_guidance[idx]=visionModel(pixel_values=torch.randn((1,3,224,224)).clamp(0,255).to(accelerator.device))['last_hidden_state']
-                #         text_guidance[idx]=zerotoken                
-
+                neglect=np.random.randint(0,100)
+                if neglect <5:# mute txt & using ref as gt
+                    target_latents=vae.encode(batch['ref']).latent_dist.sample().detach()*0.18215
+                    tres=text_encoder(torch.cat([zerotoken.unsqueeze(0)]*batch_size,dim=0))
+                    text_guidance=tres[0]
+                    t_m=tres[1]
+                    #print(f' text guidance befor{text_guidance.shape}')
+                else:
+                    target_latents=vae.encode(batch['target']).latent_dist.sample().detach()*0.18215
+                    tres=text_encoder(batch['caption'])
+                    text_guidance =tres[0]
+                    t_m=tres[1]
+                
+                vres=visionModel(pixel_values=batch['ref_i'])
+                image_guidance=vres[0]
+                i_m=vres[1]
+                
+               #print(f'img guidance shape{image_guidance.shape},txt shape {text_guidance.shape}')
+                cross_guidance=torch.cat([text_guidance,image_guidance],dim=1)
                 # Sample noise that we'll add to the latents
                 noise = torch.randn(target_latents.shape).to(target_latents.device)
                 bsz = target_latents.shape[0]
@@ -258,11 +252,11 @@ def main():
                 
                 target_latent_zt= noise_scheduler.add_noise(target_latents,noise,timesteps)
 
-                noise_pred=unet(target_latent_zt,timesteps,encoder_hidden_states=text_guidance,
-                                image_hidden_states=image_guidance).sample
+                noise_pred=unet(target_latent_zt,timesteps,encoder_hidden_states=cross_guidance).sample
 
-                loss = F.mse_loss(noise_pred,noise,reduction='none').mean([1,2,3]).mean()
-                
+                loss1 = F.mse_loss(noise_pred,noise,reduction='none').mean([1,2,3]).mean()
+                loss2 = F.cosine_similarity(i_m,t_m).mean()*0.5
+                loss=loss1+loss2+0.5
                 
                 step_loss.append(float(loss))
                 accelerator.backward(loss)
@@ -282,7 +276,7 @@ def main():
         epoch_loss.append(np.array(step_loss).mean())
         print(f'loss {np.array(step_loss).mean()}')
         accelerator.wait_for_everyone()
-        if np.array(step_loss).mean() >1.0:
+        if np.array(step_loss).mean() >1.5:
             break
     model_dict['ave_loss']=np.array(epoch_loss).mean()
     model_dict['epoch_loss']=np.array(epoch_loss).tolist()
@@ -290,7 +284,7 @@ def main():
     
     if accelerator.is_main_process:
         pipeline = StableDiffusionPipeline(
-            text_encoder=text_encoder,
+            text_encoder=accelerator.unwrap_model(text_encoder),
             vae=vae,
             unet=accelerator.unwrap_model(unet),
             tokenizer=tokenizer,

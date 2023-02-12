@@ -8,26 +8,25 @@ import json
 logger = get_logger(__name__)
 
 
-MODEL_NAME='runwayml/stable-diffusion-v1-5'#"model/pix2pix_conv_v2_ep30"#"model/sd-1v4-full-ema.ckpt"#
+MODEL_NAME='runwayml/stable-diffusion-v1-5'#'model/info_unet++_64_1e-06_20'
 #MODEL_NAME="model/overfit_20_ep100"
 unet_path=None
-output_path='model/attn_vd_ne'
-learning_rate=5e-6
-batch_size=4 #train_batch_size
-accumulation=8# lr_accumulation_steps
-epoch=1
+output_path='model/baseLine'
+learning_rate=1e-6
+batch_size=8 #train_batch_size
+accumulation=16# lr_accumulation_steps
+epoch=40
 
 
 
 
 
-def save_progress(unet,accelerator, args):
+def save_progress(unet,text_encoder,accelerator, args):
     torch.save(accelerator.unwrap_model(unet), os.path.join(f'{args.output_dir}',"temp_Unet"))
-
+    torch.save(accelerator.unwrap_model(text_encoder), os.path.join(f'{args.output_dir}',"temp_Unet"))
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
-    
     parser.add_argument(
         "--CLIPimg_path",
         type=str,
@@ -101,7 +100,7 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--lr_warmup_steps", type=int, default=1000, help="Number of steps for the warmup in the lr scheduler.")
+        "--lr_warmup_steps", type=int, default=500, help="Number of steps for the warmup in the lr scheduler.")
     parser.add_argument("--adam_beta1", type=float, default=0.9, help="The beta1 parameter for the Adam optimizer.")
     parser.add_argument("--adam_beta2", type=float, default=0.999, help="The beta2 parameter for the Adam optimizer.")
     parser.add_argument("--adam_weight_decay", type=float, default=1e-2, help="Weight decay to use.")
@@ -191,10 +190,6 @@ def unfreeze_params(params):
     for param in params:
         param.requires_grad=True
         
-def image_warp(img):
-    pass
-
-
 def model_log(filename,info):
     if not os.path.exists(filename):
         print(f'making new file {filename}')

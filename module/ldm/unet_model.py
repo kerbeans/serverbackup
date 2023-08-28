@@ -7,9 +7,10 @@ import torch.utils.checkpoint
 import os
 
 from diffusers.configuration_utils import ConfigMixin, register_to_config
-from diffusers.modeling_utils import ModelMixin
+from diffusers.models.modeling_utils import ModelMixin
+
 from diffusers.utils import BaseOutput
-from diffusers.models.embeddings import TimestepEmbedding, Timesteps
+from .embeddings import TimestepEmbedding, Timesteps
 from .unet_blocks import (
     CrossAttnDownBlock2D,
     CrossAttnUpBlock2D,
@@ -274,8 +275,8 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
         emb = self.time_embedding(t_emb)
 
         # 2. pre-process
-        sample = self.conv_in(sample)
         sample2=sample # modified 
+        sample = self.conv_in(sample)
         # 3. down
         down_block_res_samples = (sample,)
         for downsample_block in self.down_blocks:
@@ -314,10 +315,72 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
         #print(sample.shape)
         # sample = self.conv_norm_out(sample.float()+sample2.float()).type(sample.dtype)## modified 
         sample =self.conv_norm_out(sample.float()).type(sample.dtype)
-        sample = self.conv_act(sample)
+        sample = self.conv_act(sample)     
         sample = self.conv_out(sample)
-
+        sample =sample # modified short cut 
         if not return_dict:
             return (sample,)
 
         return UNet2DConditionOutput(sample=sample)
+
+
+
+
+class MultiControlNetModel(ModelMixin):
+    r"""
+    Multiple `ControlNetModel` wrapper class for Multi-ControlNet
+
+    This module is a wrapper for multiple instances of the `ControlNetModel`. The `forward()` API is designed to be
+    compatible with `ControlNetModel`.
+
+    Args:
+        controlnets (`List[ControlNetModel]`):
+            Provides additional conditioning to the unet during the denoising process. You must set multiple
+            `ControlNetModel` as a list.
+    """
+
+    def __init__(self, controlnets: Union[List[ControlNetModel], Tuple[ControlNetModel]]):
+        super().__init__()
+        self.nets = nn.ModuleList(controlnets)
+
+    def forward(
+        self,
+        sample: torch.FloatTensor,
+        timestep: Union[torch.Tensor, float, int],
+        encoder_hidden_states: torch.Tensor,
+        controlnet_cond: List[torch.tensor],
+        conditioning_scale: List[float],
+        class_labels: Optional[torch.Tensor] = None,
+        timestep_cond: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
+        guess_mode: bool = False,
+        return_dict: bool = True,
+    ) -> Union[ControlNetOutput, Tuple]:
+        for i, (image, scale, controlnet) in enumerate(zip(controlnet_cond, conditioning_scale, self.nets)):
+            down_samples, mid_sample = controlnet(
+                sample,
+                timestep,
+                encoder_hidden_states,
+                image,
+                scale,
+                class_labels,
+                timestep_cond,
+                attention_mask,
+                cross_attention_kwargs,
+                guess_mode,
+                return_dict,
+            )
+
+            # merge samples
+            if i == 0:
+                down_block_res_samples, mid_block_res_sample = down_samples, mid_sample
+            else:
+                down_block_res_samples = [
+                    samples_prev + samples_curr
+                    for samples_prev, samples_curr in zip(down_block_res_samples, down_samples)
+                ]
+                mid_block_res_sample += mid_sample
+
+        return down_block_res_samples, mid_block_res_sample
+

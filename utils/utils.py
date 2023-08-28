@@ -4,14 +4,14 @@ import os
 import json
 from typing import Optional
 from huggingface_hub import HfFolder,whoami
-
+from PIL import Image
 
 MODEL_NAME='runwayml/stable-diffusion-v1-5'
-output_path = 'model/baseLine'
-batch_size =16
-epoch=5
+output_path = 'model/amdin'
+batch_size =1
+epoch=20
 accumulation=8
-learning_rate =1e-6
+learning_rate =1e-4
 
 
 def save_progress(unet,text_encoder,accelerator, args):

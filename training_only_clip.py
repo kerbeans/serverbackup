@@ -29,11 +29,6 @@ from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer, CLI
 from module.unet_model import UNet2DConditionModel
 import torchvision.transforms as T
 from info_nce import InfoNCE
-
-from diffusers.loaders import AttnProcsLayers
-from diffusers.models.attention_processor import LoRAAttnProcessor
-from diffusers.optimization import get_scheduler
-
 if version.parse(version.parse(PIL.__version__).base_version) >= version.parse("9.1.0"):
     PIL_INTERPOLATION = {
         "linear": PIL.Image.Resampling.BILINEAR,
@@ -138,26 +133,19 @@ def main():
     #         layer.requires_grad =False
     # train_params=filter(lambda p: p.requires_grad,unet.parameters())
     
-    optimizer = torch.optim.Adam(
-        [{  'params':unet.parameters(),
-            'lr':args.learning_rate,
-            # 'betas':(args.adam_beta1, args.adam_beta2),
-            # 'weight_decay':args.adam_weight_decay,
-            # 'eps':args.adam_epsilon
-            },
-        # {
-        #     'params':text_encoder.text_model.parameters(),
-        #     'lr':1e-4,
-        #     # 'betas':(args.adam_beta1, args.adam_beta2),
-        #     # 'weight_decay':args.adam_weight_decay,
-        #     # 'eps':args.adam_epsilon
-        #     },
-        # {
-        #     'params':visionModel.parameters(),
-        #     'lr':1e-4,
-        #     'betas':(args.adam_beta1,args.adam_beta2),
-        #     'weight_decay':args.adam_weight_decay,
-        #     'eps':args.adam_epsilon}
+    optimizer = torch.optim.AdamW(
+        [{
+            'params':text_encoder.text_model.parameters(),
+            'lr':1e-4,
+            'betas':(args.adam_beta1, args.adam_beta2),
+            'weight_decay':args.adam_weight_decay,
+            'eps':args.adam_epsilon},
+        {
+            'params':visionModel.parameters(),
+            'lr':1e-4,
+            'betas':(args.adam_beta1,args.adam_beta2),
+            'weight_decay':args.adam_weight_decay,
+            'eps':args.adam_epsilon}
         ]
     )
 
@@ -193,8 +181,7 @@ def main():
     ct_loss=InfoNCE().to(accelerator.device)
     
     freeze_params(vae.parameters())
-    freeze_params(visionModel.parameters())
-    freeze_params(text_encoder.parameters())
+    freeze_params(unet.parameters())
     
     
     vae,unet,text_encoder, optimizer, train_dataloader, lr_scheduler,visionModel,processor,ct_loss= accelerator.prepare(
@@ -205,9 +192,7 @@ def main():
     
     # Keep vae and unet in eval model as we don't train these
     vae.eval()
-    visionModel.eval()
-    text_encoder.eval()
-    
+    unet.eval()
     #text_encoder.text_model.eval()
     vae.apply(inplace_relu)
     visionModel.apply(inplace_relu)
@@ -246,12 +231,12 @@ def main():
     for epoch in range(args.num_train_epochs):
         print(f'epoch {epoch}-------------')
         step_loss=[]
-        unet.train()
+        visionModel.train()
         text_encoder.train()
         train_loss=0.0
 
         for step, batch in enumerate(train_dataloader):
-            with accelerator.accumulate([unet,text_encoder]):
+            with accelerator.accumulate([visionModel,text_encoder]):
                 # Convert images to latent space
                 neglect=np.random.randint(0,100)
                 vres=visionModel(pixel_values=batch['ref_i'])
@@ -259,7 +244,6 @@ def main():
                 i_m=vres[1]
                 loss3=0
                 loss4=0
-                
                 if neglect <20:# mute txt & using ref as gt
                     if neglect <0:
                         target_latents=vae.encode(batch['target']).latent_dist.sample().detach()*0.18215
@@ -279,9 +263,6 @@ def main():
                     tar_i_m=visionModel(pixel_values=batch['tar_i'])[1]
                     compose=i_m+t_m
                     loss3=ct_loss(compose,tar_i_m)
-                
-                
-                
                 
                #print(f'img guidance shape{image_guidance.shape},txt shape {text_guidance.shape}')
                 cross_guidance=torch.cat([text_guidance,image_guidance],dim=1)
@@ -317,7 +298,7 @@ def main():
                 # train_loss += avg_loss.item() / args.gradient_accumulation_steps
                 
                 step_loss.append(float(loss.cpu().detach()))
-                # with torch.autograd.set_detect_anomaly(True):
+                #with torch.autograd.set_detect_anomaly(True):
                 accelerator.backward(loss)
                 
                 if accelerator.sync_gradients:
@@ -353,7 +334,7 @@ def main():
         pipeline = StableDiffusionPipeline(
             text_encoder=accelerator.unwrap_model(text_encoder),
             vae=vae,
-            unet=accelerator.unwrap_model(unet),
+            unet=unet,
             tokenizer=tokenizer,
             scheduler=PNDMScheduler.from_config(args.pretrained_model_name_or_path, subfolder="scheduler"),
             safety_checker=StableDiffusionSafetyChecker.from_pretrained("CompVis/stable-diffusion-safety-checker"),

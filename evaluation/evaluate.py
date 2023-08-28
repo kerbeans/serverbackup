@@ -7,7 +7,7 @@ from PIL import Image
 from tqdm import tqdm
 from dataset.FashionIQDataset import FashionIQDataset
 from diffusers import StableDiffusionImg2ImgPipeline
-from module.pipeline import FashionImg2ImgPipeline
+from pipeline import FashionImg2ImgPipeline
 
 
 
@@ -148,3 +148,14 @@ def comparible_matrix(output_path,MODEL_PATH,device,batchsize=8,using_clip=None)
                     gt_matrix[name]=features[i]
                 #gt_matrix[sample['tar_name']]=features
     np.save(output_path,gt_matrix)
+   
+
+
+
+
+
+def generate_image():
+    pass
+def generate_images():
+    pass
+# comparible_matrix('compare_matrix_train.npy','cuda')

@@ -1,0 +1,12 @@
+baseline:
+  epochs: 60 
+  resume_path: None
+  batch_size: 32
+  accumulation: 1
+  learning_rate: 1.0e-4 #4------1e-5
+  unet:
+  vae:
+  cond:
+  gpu_num: 4
+  precision: 16
+  Note: 123123

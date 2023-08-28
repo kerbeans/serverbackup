@@ -1,4 +1,4 @@
-from typing import List , Union 
+from typing import List , Union ,Dict
 from torchvision import transforms
 from transformers import CLIPTokenizer,CLIPFeatureExtractor
 from PIL import Image
@@ -8,8 +8,19 @@ import torch
 from .base_dataset import BaseDataset
 from dataset import preprocess,choose_best
 
-
-
+def collate_fn_light(data):
+    batch:Dict[List]={}
+    batch['cap_word']=[]
+    batch['ref']=[]
+    batch['target']=[]
+    batch['caption']=[]
+    for unit in data:
+        # print(f'unit  {unit}, {type(unit)}')
+        batch['cap_word'].append(unit['cap_word'])
+        batch['ref'].append(unit['ref'])
+        batch['target'].append(unit['target'])
+        batch['caption'].append(unit['caption'])
+    return batch 
 
 class FashionIQDataset(BaseDataset):
     '''
@@ -59,21 +70,21 @@ class FashionIQDataset_dc(FashionIQDataset):
     '''
         for clip img encoder, return ref,ref_i,caption, tar,tar_i
     '''
-    def __init__(self, split: str, dress_types: List[str], tokenizer: CLIPTokenizer = None, dim=None, 
+    def __init__(self, split: str, dress_types: List[str], device,tokenizer: CLIPTokenizer = None, dim=None, 
                  CLIP_preprocess:CLIPFeatureExtractor=None) -> None:
         super().__init__(split, dress_types, tokenizer, dim)
         self.CLIP_preprocess=CLIP_preprocess
         if self.CLIP_preprocess is None:
             self.CLIP_preprocess = CLIPFeatureExtractor.from_pretrained('openai/clip-vit-base-patch32')
     def __getitem__(self, index):
-        if True : #try:
+        try:
             image_captions = self.triplets[index]['captions']
             example={}
             example['cap_word']=str(image_captions[0]+', '+image_captions[1])
             if self.tokenizer is not None:
                 image_captions=self.tokenizer(
                     example['cap_word'],
-                    padding="max_length",
+                    padding='max_length',
                     truncation=True,
                     max_length=self.tokenizer.model_max_length,
                     return_tensors="pt",
@@ -100,7 +111,7 @@ class FashionIQDataset_dc(FashionIQDataset):
                 example['ref']=reference_image.squeeze(0)
 
             return example
-        else: #except Exception as e:
+        except Exception as e:
             print(f"{e} error catched in dataloader")
         
     
@@ -166,3 +177,45 @@ class FashionIQDataset_eval(BaseDataset):
                     example['gen_input'].append(self.retrival_preprocess(Image.open(f"{self.file_path}/{i}.jpg")).convert("RGB"))
                 example['gen_input']=torch.stack(example['gen_input'],dim=0)
             return example
+        
+        
+        
+class FashionIQDataset_light(BaseDataset):
+    '''
+        for original diffusion, return ref,caption,tar, type(Image.PIL)
+    '''
+    def __init__(self, split: str, dress_types: List[str],tokenizer:CLIPTokenizer=None,dim=None) -> None:
+        super().__init__(split, dress_types)
+        self.tokenizer=tokenizer
+        self.dim=dim
+    def __getitem__(self, index):
+        try:
+            image_captions = self.triplets[index]['captions']
+            example={}
+            example['cap_word']=str(image_captions[0]+', '+image_captions[1])
+            if self.tokenizer is not None:
+                image_captions=self.tokenizer(
+                    example['cap_word'],
+                    padding="max_length",
+                    truncation=True,
+                    max_length=self.tokenizer.model_max_length,
+                    return_tensors="pt",
+                ).input_ids[0]
+                example['caption']=image_captions
+            reference_name = self.triplets[index]['candidate']
+            if self.split == 'train'or self.split=='val':
+                reference_image_path = f"{self.data_path}/{reference_name}.jpg"
+                target_name = self.triplets[index]['target']
+                target_image_path = f"{self.data_path}/{target_name}.jpg" 
+                reference_image = Image.open(reference_image_path).convert('RGB')
+                target_image =Image.open(target_image_path).convert("RGB")
+                example['ref']=reference_image
+                example['target']=target_image
+            elif self.split == 'test':
+                reference_image_path = f"{self.data_path}/{reference_name}.jpg"
+                reference_image = Image.open(reference_image_path).convert("RGB")
+                example['ref']=reference_image.squeeze(0)
+            return example
+        except Exception as e:
+            print(e)
+            

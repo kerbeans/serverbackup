@@ -4,7 +4,7 @@ from diffusers.optimization import get_scheduler
 from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModel,CLIPFeatureExtractor
 from accelerate import Accelerator
 from accelerate.utils import set_seed
-from info_nce import InfoNCE
+# from info_nce import InfoNCE
 from PIL import Image
 import numpy as np
 import os
@@ -12,16 +12,17 @@ import torch
 import torch.functional as F
 import math
 import tqdm
-from module.ldm.unet_model import UNet2DConditionModel
+from module.ldm.unet_2d_condition import UNet2DConditionModel
 from dataset.FashionIQDataset import FashionIQDataset_light, collate_fn_light
 from utils.utils import model_log ,freeze_params
 import yaml
 
+import wandb
+import random 
 
 class base_trainer():
-    def __init__(self,yamlpath,setting) -> None:
-        with open(yamlpath,'r') as f:
-            self.args=yaml.load(f,Loader=yaml.FullLoader)[setting]
+    def __init__(self,conf) -> None:
+        self.args=conf['Training']
         self.load_model()
         self.log={}
         self.log['pretrained']=self.args.pretrained_model_name_or_path
@@ -31,9 +32,6 @@ class base_trainer():
         self.log['epoch']=self.args.num_train_epochs
         
 
-
-
-   
     def train(self):
         
         accelerator = Accelerator(
@@ -266,7 +264,6 @@ class base_trainer():
     def save_progress(self,model,accelerator):
         torch.save(accelerator.unwrap_model(model), os.path.join(f'{self.args.output_dir}',f"temp_{model.__class__.__name__}"))
 
-
     def preprocess(self,image,dim=256):
         if dim :
             image = image.resize((dim,dim), resample=Image.LANCZOS)
@@ -280,8 +277,42 @@ class base_trainer():
         image = torch.from_numpy(image)
         return 2.0 * image - 1.0
     
+    def wandb_init(self,):
+# start a new wandb run to track this script
+        wandb.init(
+            # set the wandb project where this run will be logged
+            project=self.args.expsetting,
+            
+            # track hyperparameters and run metadata
+            config={
+            "learning_rate":self.args.learning_rate,
+            "architecture": None,
+            "dataset": "FashionIQ",
+            "epochs": self.args.num_train_epochs, # epochs
+            }
+        )
+        self.wandb=wandb
+# simulate training
+        epochs = self.args.num_train_epochs
+        offset = random.random() / 5
+        for epoch in range(2, epochs):
+            acc = 1 - 2 ** -epoch - random.random() / epoch - offset # 
+            loss = 2 ** -epoch + random.random() / epoch + offset #
+                
+                # log metrics to wandb
+            wandb.log({"acc": acc, "loss": loss})
+    
+# [optional] finish the wandb run, necessary in notebooks
+        wandb.finish()
+        hasattr(self,wandb)
+    
+    
+    
     def loss_fun():
         pass
     
     def log_images():
         pass
+    
+    
+

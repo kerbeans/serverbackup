@@ -6,6 +6,10 @@ from typing import Optional
 from huggingface_hub import HfFolder,whoami
 from PIL import Image
 
+import importlib 
+from omegaconf import OmegaConf
+
+
 MODEL_NAME='runwayml/stable-diffusion-v1-5'
 output_path = 'model/amdin'
 batch_size =1
@@ -77,7 +81,7 @@ def parse_args():
     parser.add_argument(
         "--mixed_precision",
         type=str,
-        default="no",
+        default="fp16",
         choices=["no", "fp16", "bf16"],
         help=(
             "Whether to use mixed precision. Choose"
@@ -120,6 +124,55 @@ def get_full_repo_name(model_id: str, organization: Optional[str] = None, token:
     else:
         return f"{organization}/{model_id}"
 
+
+
+
+
+
+def create_model(config_path,target_model=None):
+    config = OmegaConf.load(config_path)
+    if target_model is not None:
+        config.model['target']=target_model
+    model = instantiate_from_config(config.model).cpu()
+    print(f'Loaded model config from [{config_path}]')
+    return model
+
+def create_dataset(config):
+    config=config['Dataset']
+    train_params=config.get("params", dict())
+    train_params['split']="train"
+    val_params=config.get("params", dict())
+    val_params['split']='val'
+    return [get_obj_from_str(config["target"])(**train_params),
+            get_obj_from_str(config["target"])(**val_params)]
+
+
+
+
+def instantiate_from_config(config):
+    if not "target" in config:
+        if config == '__is_first_stage__':
+            return None
+        elif config == "__is_unconditional__":
+            return None
+        raise KeyError("Expected key `target` to instantiate.")
+    return get_obj_from_str(config["target"])(**config.get("params", dict()))
+
+
+def get_obj_from_str(string, reload=False):
+    module, cls = string.rsplit(".", 1)
+    print(cls,"cls",module)
+    if reload:
+        module_imp = importlib.import_module(module)
+        importlib.reload(module_imp)
+    return getattr(importlib.import_module(module, package=None), cls)
+
+
+# config =OmegaConf.load('config/training.yaml')
+
+
+# print(type(config))
+# print(config)
 
 
 

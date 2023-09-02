@@ -260,73 +260,57 @@ def calculate_fid_given_paths(paths, batch_size, device, dims, num_workers=1):
 
     return fid_value
 
-
-def MOcompute_statis_of_path(path,model,batch_size,dims,device,num_workers,index=None):
-    if isinstance(path,list):
-        files=[f"data/images/{str(i).split('/')[-1].split('_')[0]}.jpg" for i in path]
-        if index is not None:
-            files=files[index[0]:index[1]]
-        m, s = calculate_activation_statistics(files, model, batch_size,
-                                               dims, device, num_workers)    
-    elif path.endswith('.npz'):
-        with np.load(path) as f:
+def compute_statistics_of_path_by_filter(path, model, batch_size, dims, device,
+                               num_workers=1):
+    if path[0].endswith('.npz'):
+        with np.load(path[0]) as f:
             m, s = f['mu'][:], f['sigma'][:]
     else:
-        path = pathlib.Path(path)
+        gt_path = pathlib.Path(path[0])
+        gen_path=pathlib.Path(path[1])
         files = sorted([file for ext in IMAGE_EXTENSIONS
-                       for file in path.glob('*.{}'.format(ext))])
-        files =[f"data/images/{str(i).split('_')[-1]}" for i in files]
-        if index is not None:
-            files=files[index[0]:index[1]]
-        m, s = calculate_activation_statistics(files, model, batch_size,
-                                               dims, device, num_workers)
-    return m, s
-
-def MO2compute_statistics_of_path(path, model, batch_size, dims, device,
-                               num_workers=1,index=None):
-    if isinstance(path,list):
-        files=path
-        if index is not None:
-            files=files[index[0]:index[1]]
-        m, s = calculate_activation_statistics(files, model, batch_size,
-                                               dims, device, num_workers) 
-    elif path.endswith('.npz'):
-        with np.load(path) as f:
-            m, s = f['mu'][:], f['sigma'][:]
-    else:
-        path = pathlib.Path(path)
-        files = sorted([file for ext in IMAGE_EXTENSIONS
-                       for file in path.glob('*.{}'.format(ext))])
-        if index is not None:
-            files=files[index[0]:index[1]]
+                       for file in gt_path.glob('*.{}'.format(ext))])
+        files_gend=sorted([file for ext in IMAGE_EXTENSIONS
+                       for file in gen_path.glob('*.{}'.format(ext))])
+        
+        files = [i for i in files_gend]
+        
         m, s = calculate_activation_statistics(files, model, batch_size,
                                                dims, device, num_workers)
     return m, s
 
 
+def validate_by_fid(paths,batch_size,device,dims,num_workers=1,prev=None):
+    ''' 
+    path:[ground truth path, generated image path]
+    '''
+    for p in paths:
+        if not os.path.exists(p):
+            raise RuntimeError('Invalid path: %s' % p)
 
-def MOcalculate_fid_on_target(paths,batch_size,device,dims,num_workers=1,split=1,index=None):
-    
     block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[dims]
-
     model = InceptionV3([block_idx]).to(device)
+    if prev==None:
+        m1, s1 = compute_statistics_of_path_by_filter(paths, model, batch_size,
+                                dims, device, num_workers)
+    else:
+        m1,s1 =prev
+    
+    m2, s2 = compute_statistics_of_path(paths[1], model, batch_size,
+                        dims, device, num_workers)
+    fid_value = calculate_frechet_distance(m1, s1, m2, s2)
+    
+    return fid_value,[m1,s1]
 
-    path = pathlib.Path(paths[1])
-    files = sorted([file for ext in IMAGE_EXTENSIONS
-                       for file in path.glob('*.{}'.format(ext))])
-    if index is not None:
-        files = [i for i in files if str(i).split("_")[-2]==str(index)]
-        print(f'index {index}')
-    file_step=len(files)/split
-    fid_value =[]
-    for i in range(split):
-        m1, s1 = MOcompute_statis_of_path(files, model, batch_size,
-                                            dims, device, num_workers,[int(i*file_step),int((i+1)*file_step)])
-        m2, s2 = MO2compute_statistics_of_path(files, model, batch_size,
-                                            dims, device, num_workers,[int(i*file_step),int((i+1)*file_step)])
-        fid_value.append(calculate_frechet_distance(m1, s1, m2, s2))
 
-    return fid_value
+
+
+
+
+
+
+
+
 
 def main():
     args = parser.parse_args()

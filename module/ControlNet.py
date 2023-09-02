@@ -20,19 +20,20 @@ from torch.nn import functional as F
 
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.utils import BaseOutput, logging
-from diffusers.models.attention_processor import AttentionProcessor, AttnProcessor
+
 
 from diffusers.models.modeling_utils import ModelMixin
 
 
 from .ldm.embeddings import TimestepEmbedding, Timesteps
-from .ldm.unet_blocks import (
+from .ldm.unet_2d_blocks import (
     CrossAttnDownBlock2D,
     DownBlock2D,
     UNetMidBlock2DCrossAttn,
     get_down_block,
 )
-from .ldm.unet_model import UNet2DConditionModel
+from .ldm.attention_processor import AttentionProcessor, AttnProcessor
+from .ldm.unet_2d_condition import UNet2DConditionModel
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name

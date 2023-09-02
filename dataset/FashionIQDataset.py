@@ -26,8 +26,8 @@ class FashionIQDataset(BaseDataset):
     '''
         for original diffusion, return ref,caption,tar
     '''
-    def __init__(self, split: str, dress_types: List[str],tokenizer:CLIPTokenizer=None,dim=None) -> None:
-        super().__init__(split, dress_types)
+    def __init__(self, tokenizer:CLIPTokenizer=None,dim=None,*args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
         self.tokenizer=tokenizer
         self.dim=dim
     def __getitem__(self, index):
@@ -47,15 +47,15 @@ class FashionIQDataset(BaseDataset):
             reference_name = self.triplets[index]['candidate']
             example['ref_name']=reference_name
             if self.split == 'train'or self.split=='val':
-                reference_image_path = self.data_path /  f"{reference_name}.jpg"
+                reference_image_path = f"{self.data_path}/images/{reference_name}.jpg"
                 target_name = self.triplets[index]['target']
-                target_image_path = self.data_path / f"{target_name}.jpg" 
+                target_image_path = f"{self.data_path}/images/{target_name}.jpg" 
                 reference_image = preprocess(Image.open(reference_image_path).convert('RGB'),self.dim)
                 target_image =preprocess(Image.open(target_image_path).convert("RGB"),self.dim)
                 example['ref']=reference_image.squeeze(0)
                 example['target']=target_image.squeeze(0)
             elif self.split == 'test':
-                reference_image_path = self.data_path /  f"{reference_name}.jpg"
+                reference_image_path = f"{self.data_path}/images/{reference_name}.jpg"
                 reference_image = preprocess(Image.open(reference_image_path).convert("RGB"),self.dim)
                 example['ref']=reference_image.squeeze(0)
 
@@ -219,3 +219,43 @@ class FashionIQDataset_light(BaseDataset):
         except Exception as e:
             print(e)
             
+
+
+class FashionIQDataset_combinedEmb_poseControl(BaseDataset):
+    def __init__(*args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+    
+    @staticmethod
+    
+    
+    
+    def __getitem__(self, idx):
+        '''
+        returns 
+            captions [B,3,scentence] # after using embedding  [B,3 70,768]
+            ref_image [B,3,256,256] # after VAEKL [B,4,32,32]
+            target_image [B,3,256,256] after VAEKL [B,4,32,32]
+            pose_image[B,3,256,256] # to the control_net part
+            infos [{tar_dir:str,ref_dir:str,captions:[str]}]*B
+        '''
+        item = self.triplets[idx]   
+        example={}
+        example["infos" ]= item
+        source_path = f"{self.data_path}/images/{item['candidate']}"     # source
+        target_path = f"{self.data_path}/images/{item['target']}"   # target
+        pose_path =f"{self.data_path}/pose/{item['target']}"
+        
+        captions= item['captions']
+        return example
+
+
+if '__main__' == __name__:
+    dt=FashionIQDataset_combinedEmb_poseControl('train',['dress'])
+    from torch.utils.data import DataLoader
+    dl=DataLoader(dt)
+    for i in dl:
+        print(i)
+        exit()
+        
+        
+        

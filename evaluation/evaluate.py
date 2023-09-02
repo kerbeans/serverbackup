@@ -7,7 +7,7 @@ from PIL import Image
 from tqdm import tqdm
 from dataset.FashionIQDataset import FashionIQDataset
 from diffusers import StableDiffusionImg2ImgPipeline
-from pipeline import FashionImg2ImgPipeline
+from pipelines.pipeline import FashionImg2ImgPipeline
 
 
 

@@ -1,8 +1,27 @@
-training_config:
-  exp: None 
-  MODEL_NAME : 'runwayml/stable-diffusion-v1-5'
-  output_path : 'model/amdin'
-  batch_size : 1
-  epoch: 20
-  accumulation: 1
-  learning_rate : 1e-4
+baseline:
+  Dataset: 
+    target : dataset.FashionIQDataset.FashionIQDataset
+    params :
+      dress_types: ['dress','shirt','toptee']
+      dim: 256
+      data_path: ../data
+  VAE:
+    target: diffusers.models.AutoencoderKL
+  Unet:
+    target: module.ldm.unet_2d_condition.UNet2DConditionModel
+  ControlNet:
+    target:
+  Embedding:
+    target:
+  Pipeline:
+    target: 
+
+  Training: 
+    resume_path : 'runwayml/stable-diffusion-v1-5'
+    output_path : 'model/amdin'
+    batch_size : 1
+    epoch: 20
+    gpus: 2
+    accumulation: 1
+    learning_rate : 1e-4
+    accelerate_conf: none 

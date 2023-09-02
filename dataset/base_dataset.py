@@ -4,11 +4,14 @@ import json
 import abc
 import os
 class BaseDataset(abc.ABC,Dataset):
-    def __init__(self,split: str, dress_types: List[str]) -> None:
+    def __init__(self,split: str, dress_types: List[str],data_path:str=None) -> None:
         super().__init__()
         self.split=split
         #self.data_path='../yiyang/data/fashionIQ/image_data'
-        self.data_path='data/images'
+        if data_path:
+            self.data_path=data_path
+        else:
+            self.data_path='data'
         self.triplets: List[dict] = []
         if self.split is None:
             return 
@@ -18,7 +21,7 @@ class BaseDataset(abc.ABC,Dataset):
             if dress_type not in ['dress', 'shirt', 'toptee']:
                 raise ValueError("dress_type should be in ['dress', 'shirt', 'toptee']")
         for dress_type in dress_types:
-            with open(f'data/captions/cap.{dress_type}.{split}1.json') as f:
+            with open(f'{self.data_path}/captions/cap.{dress_type}.{split}1.json') as f:
                 self.triplets.extend(json.load(f))
                 
         #----------------------filtering ----------------------
@@ -43,7 +46,7 @@ class BaseDataset(abc.ABC,Dataset):
         img_under_path=[]
         for subfolder in ['dress','shirt','toptee']:
             temp=[]
-            for root,folder,file in os.walk(f"{self.data_path}/{subfolder}"):
+            for root,folder,file in os.walk(f"{self.data_path}/images/{subfolder}"):
                 temp=[i.replace('.jpg','') for i in file]
             img_under_path.extend(temp)
             

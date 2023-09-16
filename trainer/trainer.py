@@ -1,7 +1,7 @@
 from diffusers import AutoencoderKL, DDPMScheduler, StableDiffusionPipeline
 from diffusers.pipelines.stable_diffusion import StableDiffusionSafetyChecker
 from diffusers.optimization import get_scheduler
-from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModel,CLIPFeatureExtractor
+from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModel,CLIPFeatureExtractor, PretrainedConfig
 from accelerate import Accelerator
 from accelerate.utils import set_seed
 # from info_nce import InfoNCE
@@ -14,14 +14,20 @@ import math
 import tqdm
 from module.ldm.unet_2d_condition import UNet2DConditionModel
 from dataset.FashionIQDataset import FashionIQDataset_light, collate_fn_light
+from accelerate.utils import ProjectConfiguration, set_seed
+
 from utils.utils import model_log ,freeze_params
 import yaml
-
+import transformers
+import diffusers
 import wandb
 import random 
 
+from module.ControlNet import ControlNetModel
+
+
 class base_trainer():
-    def __init__(self,conf) -> None:
+    def __init__(self,dataloader,conf) -> None:
         self.args=conf['Training']
         self.load_model()
         self.log={}
@@ -30,6 +36,17 @@ class base_trainer():
         self.log['lr']=self.args.learning_rate
         self.log['batch_size']=self.args.train_batch_size*self.args.gradient_accumulation_steps
         self.log['epoch']=self.args.num_train_epochs
+        
+        self.dataloader=dataloader
+        
+        #---------------------- args undefined --------------------
+        output_dir =None
+        logging_dir =None# modified 
+        self.accelerator_config= ProjectConfiguration(project_dir=output_dir, logging_dir=logging_dir)# 
+        
+        
+        #-----------------------------------
+
         
 
     def train(self):
@@ -40,12 +57,13 @@ class base_trainer():
         if self.args.seed is not None:
             set_seed(self.args.seed)
         
+        
+        
         noise_scheduler = DDPMScheduler.from_config(self.args.pretrained_model_name_or_path, subfolder="scheduler")
         train_dataloader=self.prepare_dataloader()
         #--------------prepare optimizer
         self.prepare_optimizer(len(train_dataloader))
         #---------------prepare InfoNCE loss
-        NCE_loss=InfoNCE()
         freeze_params(self.vae.parameters())
         freeze_params(self.visionModel.parameters())
         freeze_params(NCE_loss.parameters())
@@ -172,21 +190,23 @@ class base_trainer():
             tar_img.append(i(batch['target']).to(device))
         return ref_img,tar_img,captions
         
-    def prepare_dataloader(self):
-        train_dataset = FashionIQDataset_light(
-            split='train',
-            dress_types=['dress','shirt','toptee'],
-            tokenizer=self.tokenizer,
-            dim=self.args.resolution,
-        )
-        torch.manual_seed(0)
-        #_,train_dataset=random_split(train_dataset,[len(train_dataset)-49,49])
-        print(f'training dataset size ={len(train_dataset)}, type {train_dataset.__class__.__name__}')
-        train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=self.args.train_batch_size, \
-                                                    drop_last=True,shuffle=True,num_workers=8,pin_memory=True,
-                                                    collate_fn=collate_fn_light
-                                                    )
-        return train_dataloader
+    '''
+    # def prepare_dataloader(self):
+    #     train_dataset = FashionIQDataset_light(
+    #         split='train',
+    #         dress_types=['dress','shirt','toptee'],
+    #         tokenizer=self.tokenizer,
+    #         dim=self.args.resolution,
+    #     )
+    #     torch.manual_seed(0)
+    #     #_,train_dataset=random_split(train_dataset,[len(train_dataset)-49,49])
+    #     print(f'training dataset size ={len(train_dataset)}, type {train_dataset.__class__.__name__}')
+    #     train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=self.args.train_batch_size, \
+    #                                                 drop_last=True,shuffle=True,num_workers=8,pin_memory=True,
+    #                                                 collate_fn=collate_fn_light
+    #                                                 )
+    #     return train_dataloader
+    '''
     
     def prepare_optimizer(self, num_update_steps_per_epoch):   
         with self.args as args:      
@@ -308,11 +328,187 @@ class base_trainer():
     
     
     
-    def loss_fun():
-        pass
     
-    def log_images():
-        pass
+    def _image_grid(self,imgs, rows, cols):
+        assert len(imgs) == rows * cols
+
+        w, h = imgs[0].size
+        grid = Image.new("RGB", size=(cols * w, rows * h))
+
+        for i, img in enumerate(imgs):
+            grid.paste(img, box=(i % cols * w, i // cols * h))
+        return grid
+    
+    def import_model_class_from_model_name_or_path(self,pretrained_model_name_or_path: str, revision: str):
+        text_encoder_config = PretrainedConfig.from_pretrained(
+            pretrained_model_name_or_path,
+            subfolder="text_encoder",
+            revision=revision,
+        )
+        model_class = text_encoder_config.architectures[0]
+
+        if model_class == "CLIPTextModel":
+            from transformers import CLIPTextModel
+
+            return CLIPTextModel
+        elif model_class == "RobertaSeriesModelWithTransformation":
+            from diffusers.pipelines.alt_diffusion.modeling_roberta_series import RobertaSeriesModelWithTransformation
+
+            return RobertaSeriesModelWithTransformation
+        else:
+            raise ValueError(f"{model_class} is not supported.")
+    
+    
+    def _train_control_one_epoch(self,epoch,step,batch):
+        with self.accelerator.accumulate(self.controlnet):
+                # Convert images to latent space
+            latents = self.vae.encode(batch["pixel_values"].to(dtype=self.weight_dtype)).latent_dist.sample()
+            latents = latents * self.vae.config.scaling_factor
+
+                # Sample noise that we'll add to the latents
+            noise = torch.randn_like(latents)
+            bsz = latents.shape[0]
+                # Sample a random timestep for each image
+            timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
+            timesteps = timesteps.long()
+
+                # Add noise to the latents according to the noise magnitude at each timestep
+                # (this is the forward diffusion process)
+            noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
+
+                # Get the text embedding for conditioning
+            encoder_hidden_states = self.text_encoder(batch["input_ids"])[0]
+
+            controlnet_image = batch["conditioning_pixel_values"].to(dtype=self.weight_dtype)
+
+            down_block_res_samples, mid_block_res_sample = self.controlnet(
+                    noisy_latents,
+                    timesteps,
+                    encoder_hidden_states=encoder_hidden_states,
+                    controlnet_cond=controlnet_image,
+                    return_dict=False,
+                )
+
+            # Predict the noise residual
+            model_pred = self.unet(
+                    noisy_latents,
+                    timesteps,
+                    encoder_hidden_states=encoder_hidden_states,
+                    down_block_additional_residuals=[
+                        sample.to(dtype=self.weight_dtype) for sample in down_block_res_samples
+                    ],
+                    mid_block_additional_residual=mid_block_res_sample.to(dtype=self.weight_dtype),
+                ).sample
+
+            # Get the target for loss depending on the prediction type
+            if self.noise_scheduler.config.prediction_type == "epsilon":
+                target = noise
+            elif self.noise_scheduler.config.prediction_type == "v_prediction":
+                target = self.noise_scheduler.get_velocity(latents, noise, timesteps)
+            else:
+                raise ValueError(f"Unknown prediction type {self.noise_scheduler.config.prediction_type}")
+            loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+
+            self.accelerator.backward(loss)
+            if self.accelerator.sync_gradients:
+                params_to_clip = self.controlnet.parameters()
+                self.accelerator.clip_grad_norm_(params_to_clip, 1)
+            self.optimizer.step()
+            self.lr_scheduler.step()
+            self.optimizer.zero_grad(set_to_none=True)# key arguments
+
+            # Checks if the accelerator has performed an optimization step behind the scenes
+        if accelerator.sync_gradients:
+            progress_bar.update(1)
+            global_step += 1
+            if accelerator.is_main_process:
+                if global_step % args.checkpointing_steps == 0:
+                # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
+                    if args.checkpoints_total_limit is not None:
+                        checkpoints = os.listdir(args.output_dir)
+                        checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
+                        checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+                        # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
+                        if len(checkpoints) >= args.checkpoints_total_limit:
+                            num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
+                            removing_checkpoints = checkpoints[0:num_to_remove]
+                            logger.info(
+                                f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                            )
+                            logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+                            for removing_checkpoint in removing_checkpoints:
+                                removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
+                                shutil.rmtree(removing_checkpoint)
+
+                    save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                    accelerator.save_state(save_path)
+                    logger.info(f"Saved state to {save_path}")
+                if args.validation_prompt is not None and global_step % args.validation_steps == 0:
+                    image_logs = log_validation(
+                        vae,
+                        text_encoder,
+                        tokenizer,
+                        unet,
+                        controlnet,
+                        args,
+                        accelerator,
+                        weight_dtype,
+                        global_step,
+                    )
+
+        logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+        progress_bar.set_postfix(**logs)
+        accelerator.log(logs, step=global_step)
+        if global_step >= args.max_train_steps:
+            break
     
     
 
+    def train_control(self,dataloader):
+        self.accelerator = Accelerator(
+            gradient_accumulation_steps=self.gradient_accumulation_steps,
+            mixed_precision=self.mixed_precision,
+            log_with=self.report_to,
+            project_config=self.accelerator_project_config,
+        )
+        
+        self.weight_dtype = torch.float32
+        if self.accelerator.mixed_precision == "fp16":
+            self.weight_dtype = torch.float16
+        elif self.accelerator.mixed_precision == "bf16":
+            self.weight_dtype = torch.bfloat16
+        
+        
+        
+        if self.accelerator.is_local_main_process:
+            transformers.utils.logging.set_verbosity_warning()
+            diffusers.utils.logging.set_verbosity_info()
+        else:
+            transformers.utils.logging.set_verbosity_error()
+            diffusers.utils.logging.set_verbosity_error()
+        #--------------------------------args undefined -------------------------------------
+        args=None
+        text_encoder_cls = self.import_model_class_from_model_name_or_path(args.pretrained_model_name_or_path, args.revision)        
+        # Load scheduler and models
+        noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
+        self.text_encoder = text_encoder_cls.from_pretrained(
+            args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision
+        )
+        self.vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision)
+        self.unet = UNet2DConditionModel.from_pretrained(
+            args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision
+        )
+        self.controlnet = ControlNetModel.from_pretrained(args.controlnet_model_name_or_path)
+    
+        for epoch in range(0, args.num_train_epochs):
+            for step, batch in enumerate(self.dataloader):
+                self._train_control_one_epoch(epoch,step,batch) #????
+
+        #--------------------------------args undefined -------------------------------------
+        self.accelerator.wait_for_everyone()
+        if self.accelerator.is_main_process:
+            self.controlnet = self.accelerator.unwrap_model(self.controlnet)
+            self.controlnet.save_pretrained(args.output_dir)
+
+
+        self.accelerator.end_training()

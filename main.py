@@ -80,15 +80,13 @@ def test():
     image_grid(output.images, 2, 2).save('aa.jpg')
 
 
-
-
-
 def main():
     
     conf =OmegaConf.load('config/training.yaml')
     subConf=conf[arg.setting]
     trainingset,validationset=create_dataset(subConf)
-    Trainloader = DataLoader(trainingset)
+    Trainloader = DataLoader(trainingset,batch_size=subConf['Training'])
+    
     for batch in Trainloader:
         print(batch.keys())
         exit()
@@ -104,5 +102,6 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    #main()
+    test()
     

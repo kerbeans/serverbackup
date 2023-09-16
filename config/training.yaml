@@ -7,15 +7,16 @@ baseline:
       data_path: ../data
   VAE:
     target: diffusers.models.AutoencoderKL
+    params:
   Unet:
     target: module.ldm.unet_2d_condition.UNet2DConditionModel
-  ControlNet:
-    target:
+    params:
+  ControlNet: 
+    target: module.ControlNet.ControlNetModel
   Embedding:
     target:
   Pipeline:
     target: 
-
   Training: 
     resume_path : 'runwayml/stable-diffusion-v1-5'
     output_path : 'model/amdin'
